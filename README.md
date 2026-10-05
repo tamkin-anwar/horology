@@ -17,6 +17,8 @@ Built by Anwar Creative Studio.
 - **Import report.** Every messy line in the source note and what happened to it: duplicates merged, tracking parameters stripped, cut-off links recovered, ticked items moved into the collection, and the few that need a human.
 - **Real photos.** Every watch gets its actual product photo, fetched from the page you saved, or from a store listing whose reference number matches exactly. Studio shots sit on a soft light card; lifestyle shots show full-bleed. When there's no reference to confirm a match, the closest options are offered side by side and nothing is used until you pick. Until a photo turns up, the watch is drawn.
 - **Add a watch.** Paste a link or type a reference and the photo, maker, model and reference come back in a few seconds, ready to edit before saving.
+- **Everything saves, everything undoes.** Keep or dismiss a suggested decision, choose a candidate (the rest become "considered"), reopen it, add or remove candidates, start a decision or a milestone, date a milestone, move a watch into the collection with its story, edit it, give a dead link a fresh one, remove it. Every action shows an Undo.
+- **Add with intent.** After the lookup, Add asks which version you mean (offering the store's own versions when it lists them, and asking for the reference when a brand page covers several) and why you're saving it: just want it, comparing it in a decision, for a milestone, or already own it.
 - **A live watch.** The featured watch is drawn, not photographed, and tells the real time with a sweeping seconds hand and today's date in the window.
 
 ## How it works
@@ -36,6 +38,10 @@ The data model came from the source note, which broke every simpler model tried 
 
 **No guessing.** Specs are filled only when the note, the link, or the reference itself states them. A missing case diameter shows "Not found", never an invented 39 mm. For watch data, confidently wrong is worse than blank. Decisions the app inferred from variants are labelled "Suggested" until you keep or dismiss them.
 
+**Saving is an append-only log.** `store.js` never rewrites the base data. Each change is an operation (create, update, or undo of an earlier one) layered over `data.js` and `personal.js`, and the screen is rebuilt from base + operations. That makes undo exact, lets two copies merge by simple union of operation ids with nothing to reconcile, and is the same shape a future iCloud sync needs.
+
+Operations are written to IndexedDB and the page asks for persistent storage, because browsers can otherwise clear site data (Safari after seven days without a visit). When the local server runs, every operation is also mirrored to `prototype/state/ops.json` with a daily copy in `state/backups/`. The footer shows where your data lives and offers Back up, Restore and Undo last. Restoring merges; it never overwrites.
+
 **Photos without guessing.** `tools/lookup.mjs` reads a saved page's structured product data and link-preview image, then the store's own product feed. With no usable page, it searches stores by reference and accepts a result only if the reference matches exactly: searching by model name confidently returns the wrong watch (a Railmaster came back as a Seamaster Diver 300M), so name matches are only ever offered as choices. Logo banners and thumbnails are rejected by shape and size.
 
 **Drawn as a fallback.** Every watch is also rendered as vector art from its style and dial colour: divers with count-up bezels, chronographs with tachymeters and sub-dials, GMTs with 24-hour bezels, field and pilot dials, sector and roulette dials, a Tank with roman numerals and a sapphire cabochon, a Ventura, a G-Shock with a live LCD. It stays sharp at any size, on any display. The art is illustrative and never stands in for a spec.
@@ -49,6 +55,8 @@ The bet: the structured history of your decisions is the product, and anything s
 ## Privacy
 
 Stories, milestones and milestone decisions are personal, so they live in `prototype/personal.js`, which is gitignored and never published. Without it the app runs as a public demo of the same collection with those parts empty.
+
+Your saved changes (stories included) live in your browser and in `prototype/state/`, which is gitignored.
 
 Watch photos belong to their makers and stores, so they're fetched onto your own machine (`prototype/img/`, `prototype/images.js`) and never committed. The public demo shows the drawings.
 
@@ -83,7 +91,8 @@ prototype/build.sh
 - Done: vector watch renderer covering 21 watch styles, with live time on the featured watch
 - Done: public/personal split so private stories never reach the repo
 - Done: real photos for 80 of 136 watches, a picker for 19 more, and Add by link or reference with the photo fetched straight away
-- Not yet: saving. Keep, Dismiss, "Add date" and "Add a candidate" are visual only; photo picks and added watches are kept in this browser only
-- Not yet: asking which variant you meant at capture time, and fresh links for the dead Omega and Timex pages
+- Done: saving with undo for every action, a disk mirror and daily backups, backup files you can restore from
+- Done: Add asks which version and why; dead links can be replaced, bringing a photo and reference with them
+- Not yet: your clean-up pass: picking the 19 photos, re-linking the dead pages, confirming the suggested decisions, adding milestone dates
 - Not yet: a native iPhone app (SwiftUI, local-first, iCloud sync), which is where this is headed
 - Later, only if earned: collection insights built on your decision history, and licensed market data instead of scraping

@@ -9,3 +9,6 @@ prototype/horology.html
 # Real watch photos are copyrighted by their makers and stores: kept on this machine only.
 prototype/images.js
 prototype/img/
+
+# Saved changes mirrored to disk by the local server (personal).
+prototype/state/

@@ -10,6 +10,9 @@ import { fromUrl, fromReference, byName, saveImage } from "./tools/lookup.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imgDir = path.join(root, "img");
+// Your saved changes, mirrored to disk (gitignored). One daily copy is kept in state/backups/.
+const stateDir = path.join(root, "state");
+const opsFile = path.join(stateDir, "ops.json");
 const PORT = Number(process.env.PORT) || 4377;
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".json": "application/json", ".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".avif": "image/avif", ".svg": "image/svg+xml" };
 
@@ -20,11 +23,31 @@ async function keep(src) {
   return "img/" + name;
 }
 
+function readOps() {
+  try { return JSON.parse(fs.readFileSync(opsFile, "utf8")); } catch { return []; }
+}
+function writeOps(list) {
+  fs.mkdirSync(path.join(stateDir, "backups"), { recursive: true });
+  const tmp = opsFile + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(list));
+  fs.renameSync(tmp, opsFile); // atomic: a crash never leaves a half-written file
+  const daily = path.join(stateDir, "backups", `ops-${new Date().toISOString().slice(0, 10)}.json`);
+  fs.copyFileSync(opsFile, daily);
+}
+function readBody(req) {
+  return new Promise((res, rej) => {
+    let b = "";
+    req.on("data", (c) => { b += c; if (b.length > 20e6) req.destroy(); });
+    req.on("end", () => res(b));
+    req.on("error", rej);
+  });
+}
+
 async function lookup(q) {
   q = q.trim();
   if (/^https?:\/\//i.test(q)) {
     const r = await fromUrl(q);
-    const base = { url: q, maker: r.maker || null, title: r.title || null, ref: r.ref || null };
+    const base = { url: q, maker: r.maker || null, title: r.title || null, ref: r.ref || null, variants: r.variants || [] };
     if (r.ok) {
       for (const im of r.images) {
         try { return { ...base, photo: { src: await keep(im.src), source: r.source, method: im.how } }; } catch {}
@@ -51,6 +74,25 @@ async function lookup(q) {
 
 http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://${req.headers.host}`);
+  if (u.pathname === "/api/ops") {
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(readOps()));
+      return;
+    }
+    if (req.method === "POST") {
+      try {
+        const incoming = JSON.parse(await readBody(req));
+        const list = readOps();
+        const have = new Set(list.map((o) => o.id));
+        const add = (Array.isArray(incoming) ? incoming : []).filter((o) => o && o.id && !have.has(o.id));
+        if (add.length) writeOps([...list, ...add].sort((a, b) => a.at - b.at));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ added: add.length }));
+      } catch (e) {
+        res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: e.message }));
+      }
+      return;
+    }
+  }
   if (u.pathname === "/api/lookup") {
     try {
       const out = await lookup(u.searchParams.get("q") || "");
@@ -62,7 +104,7 @@ http.createServer(async (req, res) => {
   }
   const rel = decodeURIComponent(u.pathname === "/" ? "/index.html" : u.pathname);
   const file = path.join(root, rel);
-  if (!file.startsWith(root) || /\/(tools|node_modules)\//.test(rel) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  if (!file.startsWith(root) || /\/(tools|node_modules|state)\//.test(rel) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end("Not found");
     return;
   }

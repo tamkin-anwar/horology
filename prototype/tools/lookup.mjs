@@ -63,11 +63,13 @@ export async function fromUrl(url) {
     const r = await get(url);
     if (!r.ok) return { ok: false, host, reason: r.status === 404 ? "dead link" : r.status === 403 ? "site blocks lookups" : `site said ${r.status}` };
     const page = readPage(await r.text(), r.url);
-    if (!page.image && /\/products\//.test(url)) {
+    if ((!page.image || /\/products\//.test(url)) && /\/products\//.test(url)) {
       const j = await get(url.split("?")[0].replace(/\/$/, "") + ".json", "application/json").catch(() => null);
       if (j?.ok) {
         const p = (await j.json()).product;
-        if (p?.images?.[0]) Object.assign(page, { image: p.images[0].src, images: [{ src: p.images[0].src, how: "store data" }], title: page.title || p.title, maker: p.vendor || page.maker, ref: page.ref || p.variants?.[0]?.sku || null, method: "store data" });
+        // Store versions (strap, bracelet, dial) when the shop publishes them.
+        if (p?.variants?.length > 1) page.variants = p.variants.map((v) => ({ title: v.title, sku: v.sku || null, image: p.images.find((i) => i.id === v.image_id)?.src || null }));
+        if (p?.images?.[0] && !page.image) Object.assign(page, { image: p.images[0].src, images: [{ src: p.images[0].src, how: "store data" }], title: page.title || p.title, maker: p.vendor || page.maker, ref: page.ref || p.variants?.[0]?.sku || null, method: "store data" });
       }
     }
     if (!page.image) return { ok: false, host, reason: "no photo on page", ...page };
