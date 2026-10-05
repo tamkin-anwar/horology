@@ -1,0 +1,7 @@
+# Personal layer: stories, milestones, milestone decisions. Never commit.
+prototype/personal.js
+# Single-file build includes the personal layer when present.
+prototype/horology.html
+
+.DS_Store
+.claude/
