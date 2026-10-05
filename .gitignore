@@ -5,3 +5,7 @@ prototype/horology.html
 
 .DS_Store
 .claude/
+
+# Real watch photos are copyrighted by their makers and stores: kept on this machine only.
+prototype/images.js
+prototype/img/
