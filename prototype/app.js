@@ -2,8 +2,11 @@
   // The base dataset is never edited. Every change is an operation in store.js, and the
   // collections below are rebuilt from base + operations after each one.
   const BASE = window.HOROLOGY;
-  const IMAGES = window.HOROLOGY_IMAGES || {};
-  let D, ALL, MS, DEC, inDecision, DISMISSED;
+  // Photo data: images.js on this machine, or imageInfo on each watch in shared mode.
+  const LOCAL_IMAGES = window.HOROLOGY_IMAGES || {};
+  const imgInfo = (w) => w.imageInfo || LOCAL_IMAGES[w.id];
+  const CLOUD = window.Store.cloud;
+  let D, ALL, MS, DEC, inDecision, DISMISSED, PICKS = [];
 
   function rebuild() {
     const m = window.Store.apply(BASE);
@@ -17,6 +20,7 @@
       straps: m.straps,
     };
     DISMISSED = m.decisions.filter((d) => d.dismissed);
+    PICKS = m.picks.filter((p) => !p.cancelled);
     ALL = Object.fromEntries(m.watches.map((w) => [w.id, w]));
     MS = Object.fromEntries(m.milestones.map((x) => [x.id, x]));
     DEC = Object.fromEntries(m.decisions.map((d) => [d.id, d]));
@@ -54,7 +58,7 @@
     return w.variant || "";
   };
   const makerLine = (w) => (w.collab ? `${w.maker} × ${w.collab}` : w.maker);
-  const deadLink = (w) => !w.relinked && /dead link/.test(IMAGES[w.id]?.missing || "");
+  const deadLink = (w) => !w.relinked && /dead link/.test(imgInfo(w)?.missing || "");
   const needsAttention = (w) => w.variantLost || deadLink(w) || ["partial", "broken", "brand", "text", "article", "repaired"].includes(w.capture);
 
   // ---------- art ----------
@@ -65,21 +69,39 @@
     if (w.photoPick === "drawing") return null;
     if (w.photoPick) return w.photoPick;
     if (w.photo) return w.photo;
-    return IMAGES[w.id]?.src ? IMAGES[w.id] : null;
+    return imgInfo(w)?.src ? imgInfo(w) : null;
   }
-  const pendingPick = (w) => !w.photoPick && !photoOf(w) && IMAGES[w.id]?.choices?.length > 0;
+  const pendingPick = (w) => !w.photoPick && !photoOf(w) && imgInfo(w)?.choices?.length > 0;
+
+  // Shared photos are stored privately ("sb:path") and shown through signed links.
+  const srcOf = (src) => (src && src.startsWith("sb:") ? CLOUD.photoUrl(src) : src);
 
   // A real photo on a soft light card, with the drawing underneath until the photo has loaded.
   function media(w, size, opts = {}) {
     const p = photoOf(w);
-    if (!p) return dial(w, size, opts);
-    return `<div class="media" style="--s:${size}px">${dial(w, size)}<img src="${esc(p.src)}" alt="" loading="lazy" decoding="async" onload="photoLoaded(this)" onerror="this.remove()"></div>`;
+    const src = p && srcOf(p.src);
+    if (!src) return dial(w, size, opts);
+    return `<div class="media" style="--s:${size}px">${dial(w, size)}<img src="${esc(src)}" alt="" loading="lazy" decoding="async" onload="photoLoaded(this)" onerror="this.remove()"></div>`;
   }
-  const tile = (src, size) => `<div class="media" style="--s:${size}px"><img src="${esc(src)}" alt="" onload="photoLoaded(this)"></div>`;
+  const tile = (src, size) => `<div class="media" style="--s:${size}px"><img src="${esc(srcOf(src) || "")}" alt="" onload="photoLoaded(this)"></div>`;
+
+  // Fetch signed links for every stored photo we're about to show, then redraw once.
+  async function resolvePhotos() {
+    if (!CLOUD.signedIn) return;
+    const srcs = [];
+    Object.values(ALL).forEach((w) => {
+      const i = imgInfo(w);
+      [w.photo?.src, w.photoPick?.src, i?.src, ...(i?.choices || []).map((c) => c.src)].forEach((s) => s && srcs.push(s));
+    });
+    if (await CLOUD.resolvePhotos(srcs)) refresh();
+  }
 
   // Studio packshots (white corners) sit on the light card; lifestyle photos show full-bleed.
   const shotKind = new Map();
   window.photoLoaded = (img) => {
+    // Not a product shot (logo banner, thumbnail): keep the drawing.
+    const { naturalWidth: nw, naturalHeight: nh } = img;
+    if (nw && nh && (nw / nh > 2 || nh / nw > 2.2 || Math.max(nw, nh) < 320)) { img.remove(); return; }
     let kind = shotKind.get(img.src);
     if (!kind) {
       kind = "studio";
@@ -149,6 +171,7 @@
       </button>
     </section>
 
+    ${viewPicks()}
     <section class="block">
       <header class="block-head"><h2>In the box</h2><p class="muted">${lock} Stories are private. Nothing here is shared.</p></header>
       <div class="grid owned">
@@ -403,7 +426,7 @@
       <p class="lede">Every messy line, and what the importer did with it. The raw text is always kept.</p>
     </section>
     <section class="block inbox">
-      ${Object.keys(IMAGES).length ? viewPhotoRows() : ""}
+      ${[...D.owned, ...D.wants].some(imgInfo) ? viewPhotoRows() : ""}
       ${list.map((i) => {
         const w = i.target && ALL[i.target];
         const [label, cls] = KIND[i.kind];
@@ -424,7 +447,7 @@
     const none = ws.filter((w) => !photoOf(w) && !pendingPick(w) && w.photoPick !== "drawing");
     const why = {};
     none.forEach((w) => {
-      const m = IMAGES[w.id]?.missing || "added before photos";
+      const m = imgInfo(w)?.missing || "added before photos";
       const k = /dead link/.test(m) ? "dead links" : /no exact match/.test(m) ? "references no store carries" : /brand only/.test(m) ? "brand only" : /blocks|no photo on page|timed out/.test(m) ? "sites that block lookups" : "other";
       why[k] = (why[k] || 0) + 1;
     });
@@ -464,6 +487,7 @@
       <div class="d-actions">
         ${owned ? `<button class="btn" data-act="story" data-w="${id}">${w.occasion || w.story ? "Edit story" : "Add a story"}</button>`
           : `<button class="btn" data-act="own" data-w="${id}">I own this</button><button class="btn ghost" data-act="to-decision" data-w="${id}">Add to a decision</button>`}
+        ${!owned && CLOUD.signedIn && others().length ? `<button class="btn ghost gift-btn" data-act="surprise" data-w="${id}">${myHiddenPick() ? (myHiddenPick().watch === id ? "Your surprise pick ✓" : "Make this my surprise pick") : `Pick as a surprise for ${esc(memberName(others()[0].email))}`}</button>` : ""}
         <button class="btn ghost" data-act="edit" data-w="${id}">Edit</button>
         <button class="btn ghost" data-act="relink" data-w="${id}">${w.urls.length ? "Replace link" : "Add a link"}</button>
         <button class="btn ghost danger" data-act="archive" data-w="${id}">Remove</button>
@@ -491,14 +515,14 @@
 
   function photoCaption(w) {
     const p = photoOf(w);
-    const im = IMAGES[w.id];
+    const im = imgInfo(w);
     if (p) return `<p class="photo-cap">Photo · ${esc(p.source || "")}${p.method ? ` · ${esc(p.method)}` : ""} <button class="inline" data-act="pick" data-w="${w.id}" data-i="-1">Show the drawing</button></p>`;
     if (w.photoPick === "drawing" && (im?.src || im?.choices?.length || w.photo)) return `<p class="photo-cap">Drawing · <button class="inline" data-act="pick" data-w="${w.id}" data-i="-2">Show the photo</button></p>`;
     return "";
   }
 
   function photoChoices(w) {
-    const im = IMAGES[w.id];
+    const im = imgInfo(w);
     if (!im?.choices?.length || im.src) return "";
     const cur = w.photoPick;
     return `<h4>${cur && cur !== "drawing" ? "Your pick" : "Which one is it?"}</h4>
@@ -521,6 +545,7 @@
   }
   function closeSheet() {
     sheetSubmit = null;
+    if (remoteWaiting) { remoteWaiting = false; setTimeout(refresh, 0); }
     document.body.classList.remove("sheet-open");
     $("#sheet").setAttribute("aria-hidden", "true");
   }
@@ -711,8 +736,9 @@
     return { model: main.trim(), size: size ? `${size[1]} mm` : null, variant: variant.trim() || null };
   }
   const lookingHtml = () => `<div class="looking">${dial({ dial: ["dress", "#1d1d1f"] }, 110, { live: true })}<p class="muted">Finding the watch and its photo…</p></div>`;
-  const serverNote = () => `<p class="note warn">This needs the local server, because a browser can't read other sites by itself. Run <code>node server.mjs</code> in <code>prototype/</code> and open localhost:4377.</p>`;
+  const serverNote = () => CLOUD.signedIn ? `<p class="note warn">The lookup didn't answer. Check your connection and try again; if it keeps failing, the “lookup” function may not be deployed in Supabase yet.</p>` : `<p class="note warn">This needs the local server, because a browser can't read other sites by itself. Run <code>node server.mjs</code> in <code>prototype/</code> and open localhost:4377.</p>`;
   async function apiLookup(q) {
+    if (CLOUD.signedIn) { try { return await CLOUD.lookup(q); } catch { return null; } }
     try {
       const res = await fetch(`/api/lookup?q=${encodeURIComponent(q)}`);
       if (!res.ok || !(res.headers.get("content-type") || "").includes("json")) throw new Error(res.status);
@@ -729,6 +755,7 @@
     setTimeout(() => $("#add-q").focus(), 50);
   }
   function closeAdd() {
+    if (remoteWaiting) { remoteWaiting = false; setTimeout(refresh, 0); }
     document.body.classList.remove("add-open");
     $("#add").setAttribute("aria-hidden", "true");
   }
@@ -815,6 +842,19 @@
   // ---------- footer: where your data lives ----------
   function renderFoot() {
     const i = window.Store.info();
+    if (CLOUD.signedIn && CLOUD.collection) {
+      const others = CLOUD.members.filter((m) => m.email !== CLOUD.email).map((m) => m.name || m.email.split("@")[0]);
+      $("#foot").innerHTML = `
+        <span class="dot ${i.online && !i.pending ? "ok" : ""}"></span>
+        <span>${esc(myName())}${others.length ? ` · shared with ${esc(others.join(", "))}` : " · not shared yet"} · ${i.pending ? `${i.pending} waiting to sync` : i.online ? "synced" : "offline, saved on this device"}</span>
+        <span class="foot-acts">
+          <button data-act="sharing">Sharing</button>
+          <button data-act="backup">Back up</button>
+          <button data-act="undo-last" ${window.Store.lastUndoable() ? "" : "disabled"}>Undo last</button>
+          <button data-act="sign-out">Sign out</button>
+        </span>`;
+      return;
+    }
     $("#foot").innerHTML = `
       <span class="dot ${i.serverOk ? "ok" : i.indexedDb ? "" : "bad"}"></span>
       <span>${i.changes} saved ${i.changes === 1 ? "change" : "changes"} · ${i.serverOk ? "in this browser and mirrored to disk (prototype/state)" : i.indexedDb ? "in this browser only" : "not saved: browser storage is unavailable"}${i.persisted ? " · protected from browser clean-up" : ""}</span>
@@ -854,6 +894,164 @@
     for (const w of added) await window.Store.commit({ type: "create", kind: "watch", ref: w.id, data: { ...w, status: "want" }, label: "Watch added" });
     try { localStorage.removeItem("horology.picks"); localStorage.removeItem("horology.added"); } catch {}
   }
+
+  // ---------- people ----------
+  const memberName = (email) => { const m = CLOUD.members.find((x) => x.email === email); return m?.name || (email ? email.split("@")[0] : "Someone"); };
+  const myName = () => memberName(CLOUD.email);
+  const others = () => CLOUD.members.filter((m) => m.email !== CLOUD.email);
+  const isOwner = () => CLOUD.members.find((m) => m.email === CLOUD.email)?.role === "owner";
+
+  // ---------- surprise picks ----------
+  // The public part says only that someone picked a watch for someone; which watch lives in a
+  // private operation only the picker can read, until they reveal it.
+  const myHiddenPick = () => PICKS.find((p) => p.by === CLOUD.email && p.hidden);
+  const giftArt = `<svg viewBox="0 0 120 120" class="gift-art" aria-hidden="true"><defs><linearGradient id="gb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2622"/><stop offset="1" stop-color="#141210"/></linearGradient><linearGradient id="gr" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#b8975c"/><stop offset=".5" stop-color="#ecd9a8"/><stop offset="1" stop-color="#a6844b"/></linearGradient></defs>
+    <rect x="18" y="44" width="84" height="62" rx="6" fill="url(#gb)" stroke="#3a342d"/><rect x="12" y="32" width="96" height="18" rx="4" fill="#24201c" stroke="#3a342d"/>
+    <rect x="54" y="32" width="12" height="74" fill="url(#gr)"/><rect x="12" y="38" width="96" height="6" fill="url(#gr)" opacity=".85"/>
+    <path d="M60 32 C 44 10, 26 22, 44 31 Z M60 32 C 76 10, 94 22, 76 31 Z" fill="none" stroke="url(#gr)" stroke-width="5" stroke-linejoin="round"/></svg>`;
+
+  function viewPicks() {
+    if (!PICKS.length) return "";
+    const card = (p) => {
+      const mine = p.by === CLOUD.email;
+      const w = p.watch && ALL[p.watch];
+      if (p.hidden && !mine) {
+        return `<div class="pick-card gift"><div class="pick-art">${giftArt}</div><div><p class="eyebrow">A surprise</p><h3>${esc(memberName(p.by))} has picked a watch for you.</h3><p class="muted">It stays hidden until ${esc(memberName(p.by))} reveals it.${p.pickedAt ? ` Picked ${esc(new Date(p.pickedAt).toLocaleDateString(undefined, { month: "long", day: "numeric" }))}.` : ""}</p></div></div>`;
+      }
+      if (!w) return "";
+      return `<div class="pick-card ${p.hidden ? "secret" : "revealed"}">
+        <button class="pick-art" data-open="${w.id}">${media(w, 150)}</button>
+        <div>
+          <p class="eyebrow">${p.hidden ? `Your surprise for ${esc(memberName(p.for))} · hidden from them` : mine ? `You picked this for ${esc(memberName(p.for))}` : `${esc(memberName(p.by))} picked this for you`}</p>
+          <h3>${esc(w.maker)} ${esc(title(w))}</h3>
+          ${p.note ? `<p class="story">“${esc(p.note)}”</p>` : ""}
+          ${p.hidden ? `<div class="dec-actions"><button class="btn" data-act="reveal-pick" data-p="${p.id}">Reveal to ${esc(memberName(p.for))}</button><button class="btn ghost" data-act="edit-pick" data-p="${p.id}">Edit note</button><button class="btn ghost" data-act="cancel-pick" data-p="${p.id}">Cancel</button></div>`
+            : `<p class="muted small">Revealed ${p.revealedAt ? esc(new Date(p.revealedAt).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })) : ""}</p>`}
+        </div>
+      </div>`;
+    };
+    const html = PICKS.slice().sort((a, b) => (b.pickedAt || 0) - (a.pickedAt || 0)).map(card).join("");
+    return html ? `<section class="block"><header class="block-head"><h2>Picks</h2><p class="muted">${lock} Between the two of you.</p></header><div class="picks">${html}</div></section>` : "";
+  }
+
+  function sheetSurprise(w) {
+    const existing = myHiddenPick();
+    const forWho = existing ? existing.for : others()[0]?.email;
+    openSheet(`${sheetHead("A surprise", `Pick the ${esc(title(w))} for ${esc(memberName(forWho))}?`)}
+      <form data-sheet class="fields">
+        ${others().length > 1 && !existing ? `<label>For<select name="for">${others().map((m) => `<option value="${esc(m.email)}">${esc(m.name || m.email)}</option>`).join("")}</select></label>` : ""}
+        ${area("note", "A note for when you reveal it (optional)", existing?.note || "")}
+        <p class="muted small">${esc(memberName(forWho))} will see that you've picked something, never which watch, until you reveal it.${existing ? " This replaces your current hidden pick." : ""}</p>
+        <button class="btn wide">${existing ? "Make this my pick" : "Keep it a surprise"}</button>
+      </form>`, (f) => {
+      const secret = { watch: w.id, note: (f.note || "").trim() || null };
+      if (existing) return act([{ ...upd("pick", existing.id, secret), privateTo: CLOUD.email }], "Surprise pick changed");
+      const pick = create("pick", { by: CLOUD.email, for: f.for || forWho, hidden: true, pickedAt: Date.now() });
+      // The public half is labelled without the watch; the private half carries it.
+      const group = window.Store.uid(); // undo removes both halves together
+      return window.Store.commit({ ...pick, group, label: "A surprise pick" })
+        .then(() => window.Store.commit({ ...upd("pick", pick.ref, secret), group, privateTo: CLOUD.email, label: `Picked the ${title(w)}` }))
+        .then((c) => { rebuild(); refresh(); toast(`Hidden from ${memberName(f.for || forWho)}`, c.id); });
+    });
+  }
+
+  function sheetEditPick(p) {
+    openSheet(`${sheetHead("Your surprise", esc(title(ALL[p.watch])))}
+      <form data-sheet class="fields">${area("note", "Note", p.note || "")}<button class="btn wide">Save</button></form>`,
+      (f) => act([{ ...upd("pick", p.id, { note: (f.note || "").trim() || null }), privateTo: CLOUD.email }], "Note saved"));
+  }
+
+  function sheetRevealPick(p) {
+    const w = ALL[p.watch];
+    openSheet(`${sheetHead("Reveal", `Show ${esc(memberName(p.for))} the ${esc(title(w))}?`)}
+      <form data-sheet class="fields"><p class="muted small">It appears on their screen straight away, with your note.</p><button class="btn wide">Reveal it</button></form>`,
+      // Revealing copies the watch into the public part of the pick.
+      () => act([upd("pick", p.id, { hidden: false, watch: p.watch, note: p.note || null, revealedAt: Date.now() })], `Revealed to ${memberName(p.for)}`));
+  }
+
+  // ---------- sharing ----------
+  function sheetSharing() {
+    const owner = isOwner();
+    openSheet(`${sheetHead("Sharing", esc(CLOUD.collection.name))}
+      <div class="member-list">${CLOUD.members.map((m) => `<div class="member"><span><strong>${esc(m.name || m.email.split("@")[0])}${m.email === CLOUD.email ? " (you)" : ""}</strong><em>${esc(m.email)} · ${m.role === "owner" ? "owner" : "can see and add everything"}</em></span>
+        ${owner && m.role !== "owner" ? `<button class="btn ghost danger" data-act="remove-member" data-email="${esc(m.email)}">Remove</button>` : ""}</div>`).join("")}</div>
+      ${owner ? `<form data-sheet name="add" class="fields"><p class="label-like">Add someone</p>
+        ${field("email", "Their email", "", 'type="email" required placeholder="The email they will sign in with"')}
+        ${field("name", "Their name", "", 'placeholder="Their first name"')}
+        <button class="btn wide">Add</button>
+        <p class="muted small">Then send them this page's link. They choose “Create account” with that email and see everything you do, live.</p></form>` : ""}
+      <form data-sheet name="me" class="fields">${field("myname", "Your name", myName())}<button class="btn ghost wide">Save my name</button></form>
+      <p class="share-link">${esc(location.origin + location.pathname)}</p>`, async (f, form) => {
+      try {
+        if (form.name === "add") await window.Store.cloud.addMember(f.email, f.name || "");
+        else await window.Store.cloud.setMyName(f.myname || "");
+      } catch (e) { toast(/duplicate/i.test(e.message) ? "They're already in" : e.message); return false; }
+      renderFoot();
+      sheetSharing();
+      toast(form.name === "add" ? `Added ${f.name || f.email}` : "Name saved");
+      return false;
+    });
+  }
+
+  // ---------- sign-in gate (shared mode) ----------
+  function gate(mode, error = "") {
+    document.body.classList.add("gated");
+    const head = `<div class="gate-dial">${dial({ dial: ["integrated", "#1f4a3c"] }, 190, { live: true })}</div><p class="eyebrow">Anwar Horology</p>`;
+    if (mode === "signin" || mode === "signup") {
+      const up = mode === "signup";
+      $("#main").innerHTML = `<section class="gate">${head}
+        <h1>${up ? "Create your account." : "Welcome back."}</h1>
+        <form class="fields" id="gate-form" data-mode="${mode}">
+          ${field("email", "Email", "", 'type="email" autocomplete="email" required')}
+          ${field("password", "Password", "", `type="password" autocomplete="${up ? "new-password" : "current-password"}" required minlength="8"`)}
+          ${error ? `<p class="note warn">${esc(error)}</p>` : ""}
+          <button class="btn wide">${up ? "Create account" : "Sign in"}</button>
+        </form>
+        <button class="inline gate-switch" data-gate="${up ? "signin" : "signup"}">${up ? "I already have an account" : "First time here? Create an account"}</button>
+      </section>`;
+      setTimeout(() => $("#gate-form [name=email]").focus(), 50);
+      return;
+    }
+    $("#main").innerHTML = `<section class="gate">${head}
+      <h1>You're signed in.</h1>
+      <p class="lede">${esc(CLOUD.email)} isn't part of a collection yet.</p>
+      <div class="gate-choices">
+        <div class="gate-choice"><h3>Joining someone?</h3><p class="muted">Ask them to add <strong>${esc(CLOUD.email)}</strong> in Sharing, then refresh.</p><button class="btn ghost wide" data-gate="refresh">Refresh</button></div>
+        <form class="gate-choice fields" id="setup-form"><h3>Starting your own?</h3>
+          ${field("yourname", "Your name", "", 'placeholder="Your first name" required')}
+          ${field("cname", "Collection name", "Our watches")}
+          ${error ? `<p class="note warn">${esc(error)}</p>` : ""}
+          <button class="btn wide">Create the collection</button></form>
+      </div>
+      <button class="inline gate-switch" data-gate="signout">Sign out</button>
+    </section>`;
+  }
+
+  document.addEventListener("submit", async (e) => {
+    if (e.target.id === "gate-form") {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target)), up = e.target.dataset.mode === "signup";
+      e.target.querySelector("button").disabled = true;
+      try { await (up ? CLOUD.signUp(f.email, f.password) : CLOUD.signIn(f.email, f.password)); location.reload(); }
+      catch (err) {
+        const m = err.message || "";
+        gate(e.target.dataset.mode, /Invalid login/i.test(m) ? "That email and password don't match." : /fetch|network/i.test(m) ? "Couldn't reach the server. Check your connection and try again." : /already registered/i.test(m) ? "That email already has an account. Sign in instead." : m);
+      }
+    }
+    if (e.target.id === "setup-form") {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      try { await CLOUD.createCollection(f.cname, f.yourname); localStorage.setItem("horology.invite-prompt", "1"); location.reload(); }
+      catch (err) { gate("setup", err.message); }
+    }
+  });
+  document.addEventListener("click", async (e) => {
+    const g = e.target.closest("[data-gate]");
+    if (!g) return;
+    if (g.dataset.gate === "refresh") location.reload();
+    else if (g.dataset.gate === "signout") { await CLOUD.signOut(); location.reload(); }
+    else gate(g.dataset.gate);
+  });
 
   // ---------- routing ----------
   const VIEWS = { collection: viewCollection, decisions: viewDecisions, wants: viewWants, journey: viewJourney, straps: viewStraps, inbox: viewInbox };
@@ -899,10 +1097,17 @@
       case "archive": closeDrawer(); return act([upd("watch", w.id, { archived: true })], `Removed the ${title(w)}`);
       case "pick": {
         const i = Number(el.dataset.i);
-        const c = IMAGES[w.id]?.choices?.[i];
+        const c = imgInfo(w)?.choices?.[i];
         const data = i === -2 ? { photoPick: null } : i === -1 ? { photoPick: "drawing" } : { photoPick: { src: c.src, source: c.source, title: c.title, method: "your pick" } };
         return act([upd("watch", w.id, data)], i === -1 ? "Showing the drawing" : i === -2 ? "Showing the photo" : "Photo chosen");
       }
+      case "surprise": return sheetSurprise(w);
+      case "reveal-pick": return sheetRevealPick(PICKS.find((p) => p.id === el.dataset.p));
+      case "edit-pick": return sheetEditPick(PICKS.find((p) => p.id === el.dataset.p));
+      case "cancel-pick": return act([upd("pick", el.dataset.p, { cancelled: true })], "Surprise cancelled");
+      case "sharing": return sheetSharing();
+      case "remove-member": try { await CLOUD.removeMember(el.dataset.email); renderFoot(); sheetSharing(); toast("Removed"); } catch (err) { toast(err.message); } return;
+      case "sign-out": await CLOUD.signOut(); return location.reload();
       case "backup": return backup();
       case "undo-last": {
         const t = await window.Store.undo();
@@ -971,13 +1176,27 @@
     else closeDrawer();
   });
   window.addEventListener("hashchange", () => { closeDrawer(); render(); window.scrollTo({ top: 0 }); });
-  window.Store.on(() => renderFoot());
+  let remoteWaiting = false;
+  window.Store.on((why) => {
+    if (why === "remote") {
+      rebuild();
+      if (document.body.classList.contains("sheet-open") || document.body.classList.contains("add-open")) { remoteWaiting = true; renderFoot(); return; }
+      refresh();
+      resolvePhotos();
+      return;
+    }
+    renderFoot();
+  });
 
   (async () => {
     await window.Store.load();
+    if (CLOUD.configured && !CLOUD.signedIn) return gate("signin");
+    if (CLOUD.configured && !CLOUD.collection) return gate("setup");
     await migrateLegacy();
     rebuild();
     render();
     renderFoot();
+    resolvePhotos();
+    try { if (localStorage.getItem("horology.invite-prompt") && CLOUD.signedIn) { localStorage.removeItem("horology.invite-prompt"); sheetSharing(); } } catch {}
   })();
 })();

@@ -52,6 +52,10 @@ Watch apps already catalogue watches well, track wear and value, and recommend w
 
 The bet: the structured history of your decisions is the product, and anything smart (recommendations, taste, "what should I buy next?") is only as good as that history. So this version has no AI and no price scraping. It's the foundation those would need.
 
+## Sharing
+
+The app can be one shared collection for two or more people, each signing in from their own phone. Changes appear live on everyone's screen, and either person can pick a watch for the other as a hidden surprise until they reveal it. The rule that keeps a surprise hidden is enforced by the database itself, not just the screen. Hosting stays on GitHub Pages; Supabase holds sign-ins, the shared history and private photos. See [supabase/SETUP.md](supabase/SETUP.md). Without that setup, the app runs on one computer as before.
+
 ## Privacy
 
 Stories, milestones and milestone decisions are personal, so they live in `prototype/personal.js`, which is gitignored and never published. Without it the app runs as a public demo of the same collection with those parts empty.
